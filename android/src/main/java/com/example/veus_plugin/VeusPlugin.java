@@ -3,10 +3,13 @@ package com.example.veus_plugin;
 import android.annotation.TargetApi;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.Intent;
 import android.database.Cursor;
+import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.provider.ContactsContract;
+import static android.app.Activity.RESULT_CANCELED;
 
 import androidx.annotation.NonNull;
 
@@ -15,6 +18,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 
+import io.flutter.Log;
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.embedding.engine.plugins.activity.ActivityAware;
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
@@ -23,6 +27,7 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
+import io.flutter.plugin.common.PluginRegistry;
 import io.flutter.plugin.common.PluginRegistry.Registrar;
 
 /**
@@ -37,6 +42,9 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
     /// when the Flutter Engine is detached from the Activity
     private MethodChannel channel;
     private ContentResolver contentResolver;
+    private static final int FORM_OPERATION_CANCELED = 1;
+    private static final int FORM_COULD_NOT_BE_OPEN = 2;
+    private BaseContactsServiceDelegate delegate;
 
     private static final String[] PROJECTION =
             {
@@ -57,6 +65,40 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
     @Override
     public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
         initInstance(flutterPluginBinding.getBinaryMessenger(), flutterPluginBinding.getApplicationContext());
+        this.delegate = new ContactServiceDelegate(flutterPluginBinding.getApplicationContext());
+
+    }
+
+    private class ContactServiceDelegate extends BaseContactsServiceDelegate {
+        private final Context context;
+        private ActivityPluginBinding activityPluginBinding;
+
+        ContactServiceDelegate(Context context) {
+            this.context = context;
+        }
+
+        void bindToActivity(ActivityPluginBinding activityPluginBinding) {
+            this.activityPluginBinding = activityPluginBinding;
+            this.activityPluginBinding.addActivityResultListener(this);
+        }
+
+        void unbindActivity() {
+            this.activityPluginBinding.removeActivityResultListener(this);
+            this.activityPluginBinding = null;
+        }
+
+        @Override
+        void startIntent(Intent intent, int request) {
+            if (this.activityPluginBinding != null) {
+                if (intent.resolveActivity(context.getPackageManager()) != null) {
+                    activityPluginBinding.getActivity().startActivityForResult(intent, request);
+                } else {
+                    finishWithResult(FORM_COULD_NOT_BE_OPEN);
+                }
+            } else {
+                context.startActivity(intent);
+            }
+        }
     }
 
     @Override
@@ -64,7 +106,9 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
         if (call.method.equals("getPlatformVersion")) {
             result.success(getAndroidVersion());
         } else if (call.method.equals("getContacts")) {
-            result.success(getAndroidVersion());
+            getContacts(call.method, result);
+        } else if (call.method.equals("openDeviceContactPicker")) {
+            openDeviceContactPicker(result);
         } else {
             result.notImplemented();
         }
@@ -101,6 +145,79 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
         // Clean up references.
     }
 
+    private class BaseContactsServiceDelegate implements PluginRegistry.ActivityResultListener {
+        private static final int REQUEST_OPEN_CONTACT_FORM = 52941;
+        private static final int REQUEST_OPEN_EXISTING_CONTACT = 52942;
+        private static final int REQUEST_OPEN_CONTACT_PICKER = 52943;
+        private Result result;
+        private static final String LOG_TAG = "flutter_contacts";
+        private ContentResolver contentResolver;
+        private MethodChannel methodChannel;
+        private BaseContactsServiceDelegate delegate;
+
+        void setResult(Result result) {
+            this.result = result;
+        }
+
+        void finishWithResult(Object result) {
+            if(this.result != null) {
+                this.result.success(result);
+                this.result = null;
+            }
+        }
+
+        @Override
+        public boolean onActivityResult(int requestCode, int resultCode, Intent intent) {
+            if (requestCode == REQUEST_OPEN_CONTACT_PICKER) {
+                if (resultCode == RESULT_CANCELED) {
+                    finishWithResult(FORM_OPERATION_CANCELED);
+                    return true;
+                }
+                Uri contactUri = intent.getData();
+                Cursor cursor = contentResolver.query(contactUri, null, null, null, null);
+                if (cursor.moveToFirst()) {
+                    String id = contactUri.getLastPathSegment();
+                    getContacts("openDeviceContactPicker", this.result);
+                } else {
+                    Log.e(LOG_TAG, "onActivityResult - cursor.moveToFirst() returns false");
+                    finishWithResult(FORM_OPERATION_CANCELED);
+                }
+                cursor.close();
+                return true;
+            }
+
+            finishWithResult(FORM_COULD_NOT_BE_OPEN);
+            return false;
+        }
+
+        void openContactForm() {
+            try {
+                Intent intent = new Intent(Intent.ACTION_INSERT, ContactsContract.Contacts.CONTENT_URI);
+                intent.putExtra("finishActivityOnSaveCompleted", true);
+                startIntent(intent, REQUEST_OPEN_CONTACT_FORM);
+            }catch(Exception e) {
+            }
+        }
+
+        void openContactPicker() {
+            Intent intent = new Intent(Intent.ACTION_PICK);
+            intent.setType(ContactsContract.Contacts.CONTENT_TYPE);
+            startIntent(intent, REQUEST_OPEN_CONTACT_PICKER);
+        }
+
+        void startIntent(Intent intent, int request) {
+        }
+    }
+
+    private void openDeviceContactPicker(Result result) {
+        if (delegate != null) {
+            delegate.setResult(result);
+            delegate.openContactPicker();
+        } else {
+            result.success(FORM_COULD_NOT_BE_OPEN);
+        }
+    }
+
     private String getAndroidVersion() {
         return "Android == " + android.os.Build.VERSION.RELEASE;
     }
@@ -125,9 +242,14 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
         protected ArrayList<HashMap> doInBackground(Object... params) {
             ArrayList<Contact> contacts;
             switch (callMethod) {
-                case "openDeviceContactPicker": contacts = getContactsFrom(getCursor(null, (String) params[0])); break;
-                case "getContacts": contacts = getContactsFrom(getCursor((String) params[0], null)); break;
-                default: return null;
+                case "openDeviceContactPicker":
+                    contacts = getContactsFrom(getCursor(null, (String) params[0]));
+                    break;
+                case "getContacts":
+                    contacts = getContactsFrom(getCursor((String) params[0], null));
+                    break;
+                default:
+                    return null;
             }
 
             return null;
@@ -155,6 +277,7 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
 
         /**
          * Builds the list of contacts from the cursor
+         *
          * @param cursor
          * @return the list of contacts
          */
@@ -174,7 +297,7 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
                 contact.contactName = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME));
             }
 
-            if(cursor != null)
+            if (cursor != null)
                 cursor.close();
 
             return new ArrayList<>(map.values());
