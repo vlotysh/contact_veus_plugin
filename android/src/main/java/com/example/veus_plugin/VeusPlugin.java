@@ -56,6 +56,16 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
                     ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME,
             };
 
+    private void initDelegateWithRegister(Registrar registrar) {
+        this.delegate = new ContactServiceDelegateLegacy(registrar);
+    }
+
+    public static void registerWith(Registrar registrar) {
+        VeusPlugin instance = new VeusPlugin();
+        instance.initInstance(registrar.messenger(), registrar.context());
+        instance.initDelegateWithRegister(registrar);
+    }
+
     private void initInstance(BinaryMessenger messenger, Context context) {
         channel = new MethodChannel(messenger, "veus_plugin");
         channel.setMethodCallHandler(this);
@@ -143,6 +153,24 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
     public void onDetachedFromActivity() {
         // TODO: your plugin is no longer associated with an Activity.
         // Clean up references.
+    }
+
+    private class ContactServiceDelegateLegacy extends BaseContactsServiceDelegate {
+        private final PluginRegistry.Registrar registrar;
+
+        ContactServiceDelegateLegacy(PluginRegistry.Registrar registrar) {
+            this.registrar = registrar;
+            registrar.addActivityResultListener(this);
+        }
+
+        @Override
+        void startIntent(Intent intent, int request) {
+            if (registrar.activity() != null) {
+                registrar.activity().startActivityForResult(intent, request);
+            } else {
+                registrar.context().startActivity(intent);
+            }
+        }
     }
 
     private class BaseContactsServiceDelegate implements PluginRegistry.ActivityResultListener {
