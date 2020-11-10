@@ -13,6 +13,7 @@ import androidx.annotation.NonNull;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.embedding.engine.plugins.activity.ActivityAware;
@@ -104,8 +105,8 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
         return "Android == " + android.os.Build.VERSION.RELEASE;
     }
 
-    private String getContacts() {
-        return "Text";
+    private void getContacts(String callMethod, Result result) {
+        new GetContactsTask(callMethod, result);
     }
 
     @TargetApi(Build.VERSION_CODES.CUPCAKE)
@@ -122,7 +123,12 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
 
         @Override
         protected ArrayList<HashMap> doInBackground(Object... params) {
-
+            ArrayList<Contact> contacts;
+            switch (callMethod) {
+                case "openDeviceContactPicker": contacts = getContactsFrom(getCursor(null, (String) params[0])); break;
+                case "getContacts": contacts = getContactsFrom(getCursor((String) params[0], null)); break;
+                default: return null;
+            }
 
             return null;
         }
@@ -145,6 +151,33 @@ public class VeusPlugin implements FlutterPlugin, MethodCallHandler, ActivityAwa
 
             return contentResolver.query(ContactsContract.Data.CONTENT_URI, PROJECTION, selection, selectionArgs.toArray(new String[selectionArgs.size()]), null);
 
+        }
+
+        /**
+         * Builds the list of contacts from the cursor
+         * @param cursor
+         * @return the list of contacts
+         */
+        private ArrayList<Contact> getContactsFrom(Cursor cursor) {
+            HashMap<String, Contact> map = new LinkedHashMap<>();
+
+            while (cursor != null && cursor.moveToNext()) {
+                int columnIndex = cursor.getColumnIndex(ContactsContract.Data.CONTACT_ID);
+                String contactId = cursor.getString(columnIndex);
+
+                if (!map.containsKey(contactId)) {
+                    map.put(contactId, new Contact(contactId));
+                }
+                Contact contact = map.get(contactId);
+
+                String mimeType = cursor.getString(cursor.getColumnIndex(ContactsContract.Data.MIMETYPE));
+                contact.contactName = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME));
+            }
+
+            if(cursor != null)
+                cursor.close();
+
+            return new ArrayList<>(map.values());
         }
     }
 
